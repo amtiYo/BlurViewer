@@ -1,7 +1,7 @@
 <h1 align="center"> 📸 BlurViewer</h1>
 <div align="center">
 
-English | [Русский](./README.ru.md)
+English | [Русский](./README.ru.md) | [Deutsch](./README.de.md)
 
 BlurView is a minimal and fast photo viewer for Windows.  
 It supports common image formats and provides a clean, distraction-free interface.  

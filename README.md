@@ -9,10 +9,10 @@ It supports common image formats and provides a clean, distraction-free interfac
 
 
 ![Release Download](https://img.shields.io/github/downloads/amtiYo/BlurViewer/total?style=flat-square)
-[![Release Version](https://img.shields.io/github/v/release/amtiYo/BlurViewer?style=flat-square)](https://github.com/megatocha/steamDB-AppID-Copier/releases/latest)
+[![Release Version](https://img.shields.io/github/v/release/amtiYo/BlurViewer?style=flat-square)](https://github.com/amtiYo/BlurViewer/releases/latest)
 [![GitHub license](https://img.shields.io/github/license/amtiYo/BlurViewer?style=flat-square)](LICENSE)
-[![GitHub Star](https://img.shields.io/github/stars/amtiYo/BlurViewer?style=flat-square)](https://github.com/megatocha/steamDB-AppID-Copier/stargazers)
-[![GitHub Fork](https://img.shields.io/github/forks/amtiYo/BlurViewer?style=flat-square)](https://github.com/megatocha/steamDB-AppID-Copier/network/members)
+[![GitHub Star](https://img.shields.io/github/stars/amtiYo/BlurViewer?style=flat-square)](https://github.com/amtiYo/BlurViewer/stargazers)
+[![GitHub Fork](https://img.shields.io/github/forks/amtiYo/BlurViewer?style=flat-square)](https://github.com/amtiYo/BlurViewer/network/members)
 ![GitHub Repo size](https://img.shields.io/github/repo-size/amtiYo/BlurViewer?style=flat-square&color=3cb371)
 
 A minimalist, high-performance photo viewer with support for **ALL** image formats including RAW files (CR2, NEF, ARW, etc.), modern formats (HEIC, AVIF), and animated images (GIF, WebP).

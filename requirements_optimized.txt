@@ -1,0 +1,15 @@
+# Core GUI framework
+PySide6>=6.5.0
+
+# Image processing libraries (optimized versions)
+Pillow>=10.0.0  # Fast image processing
+rawpy>=0.18.0   # RAW file support
+imageio>=2.31.0  # Scientific formats
+opencv-python>=4.8.0  # Additional format support
+
+# Modern format support
+pillow-heif>=0.15.0  # HEIC/HEIF support
+pillow-avif-plugin>=1.3.0  # AVIF support
+
+# Optional: Performance monitoring
+psutil>=5.9.0  # System resource monitoring

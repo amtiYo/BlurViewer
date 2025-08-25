@@ -226,6 +226,6 @@ Thumbs.db
 *.dll
 *.pyd
 
-# Test files (optional - remove if you want to keep them)
+# Test files 
 test_*.gif
 test_*.png

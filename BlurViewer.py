@@ -1,12 +1,15 @@
 """
-BlurViewer v0.8-alpha
+BlurViewer v0.8.1-alpha
 Professional image viewer with advanced format support and smooth animations
 """
 
 import sys
+import os
 from pathlib import Path
+from typing import Optional
+import math
 
-from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, QThread, Signal
+from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, QThread, Signal, QEasingCurve
 from PySide6.QtGui import (QPixmap, QImageReader, QPainter, QWheelEvent, QMouseEvent,
                            QColor, QImage, QGuiApplication, QMovie)
 from PySide6.QtWidgets import QApplication, QWidget, QFileDialog
@@ -15,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QWidget, QFileDialog
 class ImageLoader(QThread):
     """Background thread for loading heavy image formats"""
     imageLoaded = Signal(QPixmap)
+    animatedImageLoaded = Signal(str)
     loadFailed = Signal(str)
     
     def __init__(self, path):
@@ -23,6 +27,38 @@ class ImageLoader(QThread):
     
     def run(self):
         try:
+            # Quick format validation for common misnamed files
+            if not os.path.exists(self.path):
+                self.loadFailed.emit("File does not exist")
+                return
+            
+            # Check file header for common format issues
+            try:
+                with open(self.path, 'rb') as f:
+                    header = f.read(16)
+                    
+                    # Check for video files with wrong extensions
+                    if self.path.lower().endswith(('.gif', '.png', '.jpg')) and header[4:8] == b'ftyp':
+                        self.loadFailed.emit("This is a video file (MP4), not an image. Use a video player instead.")
+                        return
+            except Exception:
+                pass
+            
+            # Check if it's an animated format first
+            if Path(self.path).suffix.lower() in BlurViewer.ANIMATED_EXTENSIONS:
+                movie = self._try_load_animated(self.path)
+                if movie and movie.isValid():
+                    # Try to start movie to verify it works
+                    try:
+                        movie.jumpToFrame(0)
+                        first_frame = movie.currentPixmap()
+                        if not first_frame.isNull():
+                            self.animatedImageLoaded.emit(self.path)
+                            return
+                    except Exception:
+                        pass
+            
+            # Load as static image
             pixmap = self._load_image_comprehensive(self.path)
             if pixmap and not pixmap.isNull():
                 self.imageLoaded.emit(pixmap)
@@ -31,135 +67,59 @@ class ImageLoader(QThread):
         except Exception as e:
             self.loadFailed.emit(str(e))
     
+    def _try_load_animated(self, path: str) -> QMovie:
+        """Try to load animated image formats using QMovie"""
+        try:
+            normalized_path = os.path.normpath(path)
+            movie = QMovie(normalized_path)
+            if movie.isValid():
+                return movie
+        except Exception:
+            pass
+        return None
+
     def _register_all_plugins(self):
         """Register all available image format plugins"""
         try:
             import pillow_heif
             pillow_heif.register_heif_opener()
         except:
-            try:
-                from pillow_heif import register_heif_opener
-                register_heif_opener()
-            except:
-                pass
+            pass
         
         try:
             import pillow_avif
         except:
-            try:
-                import pillow_avif_plugin
-            except:
-                pass
+            pass
     
     def _load_image_comprehensive(self, path: str) -> QPixmap:
         """Comprehensive image loader supporting all formats"""
         self._register_all_plugins()
         
         # Try Qt native formats first
-        reader = QImageReader(path)
+        normalized_path = os.path.normpath(path)
+        
+        reader = QImageReader(normalized_path)
         if reader.canRead():
             qimg = reader.read()
             if qimg and not qimg.isNull():
                 return QPixmap.fromImage(qimg)
         
-        # Special handling for GIF via Pillow
-        if path.lower().endswith('.gif'):
-            try:
-                from PIL import Image
-                im = Image.open(path)
+        # Try with Pillow for other formats
+        try:
+            from PIL import Image
+            with open(normalized_path, 'rb') as f:
+                im = Image.open(f)
+                im.load()
                 
-                if hasattr(im, 'is_animated') and im.is_animated:
-                    im.seek(0)
-                
-                if im.mode != 'RGBA':
+                if im.mode not in ('RGBA', 'RGB'):
                     im = im.convert('RGBA')
-                
+                elif im.mode == 'RGB':
+                    im = im.convert('RGBA')
+                    
                 data = im.tobytes('raw', 'RGBA')
                 qimg = QImage(data, im.width, im.height, QImage.Format_RGBA8888)
                 if not qimg.isNull():
                     return QPixmap.fromImage(qimg)
-            except Exception:
-                pass
-        
-        # Try RAW formats with rawpy
-        raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', 
-                         '.rw2', '.pef', '.srw', '.x3f', '.mrw', '.dcr', '.kdc', 
-                         '.erf', '.mef', '.mos', '.ptx', '.r3d', '.fff', '.iiq'}
-        
-        if Path(path).suffix.lower() in raw_extensions:
-            try:
-                import rawpy
-                with rawpy.imread(path) as raw:
-                    rgb = raw.postprocess()
-                h, w, ch = rgb.shape
-                bytes_per_line = ch * w
-                qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                return QPixmap.fromImage(qimg)
-            except Exception:
-                pass
-        
-        # Try with Pillow for other formats
-        try:
-            from PIL import Image
-            im = Image.open(path)
-            
-            if im.mode not in ('RGBA', 'RGB'):
-                im = im.convert('RGBA')
-            elif im.mode == 'RGB':
-                im = im.convert('RGBA')
-                
-            data = im.tobytes('raw', 'RGBA')
-            qimg = QImage(data, im.width, im.height, QImage.Format_RGBA8888)
-            if not qimg.isNull():
-                return QPixmap.fromImage(qimg)
-        except Exception:
-            pass
-        
-        # Try with imageio
-        try:
-            import imageio.v3 as iio
-            img_array = iio.imread(path)
-            
-            if len(img_array.shape) == 3:
-                h, w, c = img_array.shape
-                if c == 3:
-                    import numpy as np
-                    rgba = np.zeros((h, w, 4), dtype=img_array.dtype)
-                    rgba[:, :, :3] = img_array
-                    rgba[:, :, 3] = 255
-                    img_array = rgba
-                
-                bytes_per_line = 4 * w
-                qimg = QImage(img_array.data, w, h, bytes_per_line, QImage.Format_RGBA8888)
-                return QPixmap.fromImage(qimg)
-                
-            elif len(img_array.shape) == 2:
-                h, w = img_array.shape
-                qimg = QImage(img_array.data, w, h, QImage.Format_Grayscale8)
-                return QPixmap.fromImage(qimg)
-                
-        except Exception:
-            pass
-        
-        # Try with OpenCV
-        try:
-            import cv2
-            import numpy as np
-            
-            img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-            if img is not None:
-                if len(img.shape) == 3:
-                    if img.shape[2] == 3:
-                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGBA)
-                    elif img.shape[2] == 4:
-                        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
-                elif len(img.shape) == 2:
-                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGBA)
-                
-                h, w, c = img.shape
-                bytes_per_line = c * w
-                qimg = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGBA8888)
-                return QPixmap.fromImage(qimg)
         except Exception:
             pass
         
@@ -167,7 +127,29 @@ class ImageLoader(QThread):
 
 
 class BlurViewer(QWidget):
-    def __init__(self, image_path: str | None = None):
+    # Animation constants - optimized values
+    LERP_FACTOR = 0.18  # Slightly faster interpolation
+    PAN_FRICTION = 0.85  # Slightly less friction for smoother panning
+    NAVIGATION_SPEED = 0.045  # Slower for smoother transitions
+    ZOOM_FACTOR = 1.2
+    ZOOM_STEP = 0.15
+    
+    # Scale limits
+    MIN_SCALE = 0.1
+    MAX_SCALE = 20.0
+    MIN_REFRESH_INTERVAL = 8  # 125 FPS max
+    
+    # Opacity values
+    WINDOWED_BG_OPACITY = 200.0
+    FULLSCREEN_BG_OPACITY = 250.0
+    
+    # Supported file extensions
+    ANIMATED_EXTENSIONS = {'.gif', '.mng'}
+    RAW_EXTENSIONS = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', 
+                     '.rw2', '.pef', '.srw', '.x3f', '.mrw', '.dcr', '.kdc', 
+                     '.erf', '.mef', '.mos', '.ptx', '.r3d', '.fff', '.iiq'}
+    
+    def __init__(self, image_path: Optional[str] = None):
         super().__init__()
         
         # Window setup
@@ -175,11 +157,16 @@ class BlurViewer(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAcceptDrops(True)
+        
+        # Cache screen geometry to avoid repeated calls
+        self._screen_geom = None
+        self._screen_center = None
+        self._current_pixmap_cache = None  # Cache for current pixmap
 
         # Image state
-        self.pixmap: QPixmap | None = None
+        self.pixmap: Optional[QPixmap] = None
         self.image_path = None
-        self.movie: QMovie | None = None
+        self.movie: Optional[QMovie] = None
         self.rotation = 0.0
         
         # Directory navigation
@@ -194,13 +181,9 @@ class BlurViewer(QWidget):
         self.current_offset = QPointF(0, 0)
         self.fit_scale = 1.0
         
-        # Zoom limits
-        self.min_scale = 0.1
-        self.max_scale = 20.0
-        
         # Animation parameters
-        self.lerp_factor = 0.15
-        self.pan_friction = 0.88
+        self.lerp_factor = self.LERP_FACTOR
+        self.pan_friction = self.PAN_FRICTION
         
         # Navigation animation
         self.navigation_animation = False
@@ -226,7 +209,7 @@ class BlurViewer(QWidget):
         
         # Background fade
         self.background_opacity = 0.0
-        self.target_background_opacity = 200.0
+        self.target_background_opacity = self.WINDOWED_BG_OPACITY
         
         # Fullscreen state
         self.is_fullscreen = False
@@ -235,11 +218,13 @@ class BlurViewer(QWidget):
         
         # Performance optimization
         self.update_pending = False
-        self.loading_thread: ImageLoader | None = None
+        self.loading_thread: Optional[ImageLoader] = None
+        self._needs_cache_update = True  # Flag for pixmap cache
 
-        # Main animation timer
+        # Main animation timer with adaptive FPS
         self.timer = QTimer(self)
-        self.timer.setInterval(16)  # 60 FPS
+        refresh_interval = self._get_monitor_refresh_interval()
+        self.timer.setInterval(refresh_interval)
         self.timer.timeout.connect(self.animate)
         self.timer.start()
 
@@ -248,6 +233,49 @@ class BlurViewer(QWidget):
             self.load_image(image_path)
         else:
             self.open_dialog_and_load()
+
+    def _get_monitor_refresh_interval(self) -> int:
+        """Get monitor refresh interval in milliseconds"""
+        try:
+            screen = QApplication.primaryScreen()
+            if screen:
+                refresh_rate = screen.refreshRate()
+                if refresh_rate > 0:
+                    interval = int(1000.0 / refresh_rate)
+                    return max(interval, self.MIN_REFRESH_INTERVAL)
+        except Exception:
+            pass
+        
+        return 16  # Fallback to 60 FPS
+
+    def _get_current_pixmap(self) -> QPixmap:
+        """Get current pixmap with caching"""
+        if self._needs_cache_update:
+            if self.pixmap:
+                self._current_pixmap_cache = self.pixmap
+            elif self.movie:
+                self._current_pixmap_cache = self.movie.currentPixmap()
+            else:
+                self._current_pixmap_cache = QPixmap()
+            self._needs_cache_update = False
+        
+        return self._current_pixmap_cache or QPixmap()
+
+    def _invalidate_pixmap_cache(self):
+        """Invalidate the pixmap cache"""
+        self._needs_cache_update = True
+
+    def _get_screen_info(self):
+        """Get cached screen geometry and center"""
+        if self._screen_geom is None:
+            self._screen_geom = QApplication.primaryScreen().availableGeometry()
+            self._screen_center = QPointF(self._screen_geom.center())
+        return self._screen_geom, self._screen_center
+
+    def _clear_screen_cache(self):
+        """Clear cached screen info"""
+        self._screen_geom = None
+        self._screen_center = None
 
     def get_image_files_in_directory(self, directory_path: str):
         """Get list of supported image files in directory"""
@@ -260,13 +288,11 @@ class BlurViewer(QWidget):
         
         # Supported extensions
         supported_exts = {
-            '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tiff', '.tif', '.ico', '.svg',
+            '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.mng', '.webp', '.tiff', '.tif', '.ico', '.svg',
             '.pbm', '.pgm', '.ppm', '.xbm', '.xpm',
-            '.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef', '.srw',
-            '.x3f', '.mrw', '.dcr', '.kdc', '.erf', '.mef', '.mos', '.ptx', '.r3d', '.fff', '.iiq',
             '.heic', '.heif', '.avif', '.jxl',
             '.fits', '.hdr', '.exr', '.pic', '.psd'
-        }
+        } | self.RAW_EXTENSIONS
         
         image_files = []
         try:
@@ -303,7 +329,7 @@ class BlurViewer(QWidget):
         
         # Setup slide animation only in windowed mode
         if not self.is_fullscreen:
-            self.old_pixmap = self.pixmap
+            self.old_pixmap = self._get_current_pixmap()
             self.navigation_direction = direction
             self.navigation_progress = 0.0
             self.navigation_animation = True
@@ -318,13 +344,21 @@ class BlurViewer(QWidget):
         
         self.loading_thread = ImageLoader(new_path)
         self.loading_thread.imageLoaded.connect(self._on_navigation_image_loaded)
+        self.loading_thread.animatedImageLoaded.connect(self._on_navigation_animated_loaded)
         self.loading_thread.loadFailed.connect(self._on_load_failed)
         self.loading_thread.start()
     
     def _on_navigation_image_loaded(self, pixmap: QPixmap):
         """Handle successful navigation image loading"""
+        self._invalidate_pixmap_cache()
+        
         if self.is_fullscreen:
-            # Instant change in fullscreen mode
+            # Stop any movie
+            if self.movie:
+                self.movie.stop()
+                self.movie.deleteLater()
+                self.movie = None
+            
             self.pixmap = pixmap
             self.rotation = 0.0
             self._fit_to_fullscreen_instant()
@@ -332,30 +366,67 @@ class BlurViewer(QWidget):
             # Use slide animation in windowed mode
             self.new_pixmap = pixmap
             self.rotation = 0.0
-            screen_geom = QApplication.primaryScreen().availableGeometry()
-            screen_center = QPointF(screen_geom.center())
-            self.target_offset = screen_center
+
+    def _on_navigation_animated_loaded(self, path: str):
+        """Handle successful navigation animated image loading"""
+        self._invalidate_pixmap_cache()
+        
+        if self.is_fullscreen:
+            # Stop any existing movie
+            if self.movie:
+                self.movie.stop()
+                self.movie.deleteLater()
+                self.movie = None
+            
+            # Create new movie
+            normalized_path = os.path.normpath(path)
+            self.movie = QMovie(normalized_path)
+            
+            if self.movie and self.movie.isValid():
+                self.pixmap = None
+                self.rotation = 0.0
+                
+                self.movie.frameChanged.connect(self._on_movie_frame_changed)
+                self.movie.jumpToFrame(0)
+                first_frame = self.movie.currentPixmap()
+                if not first_frame.isNull():
+                    self.pixmap = first_frame
+                    self._fit_to_fullscreen_instant()
+                    self.pixmap = None
+                    self.movie.start()
+        else:
+            # Use slide animation in windowed mode
+            normalized_path = os.path.normpath(path)
+            temp_movie = QMovie(normalized_path)
+            
+            if temp_movie and temp_movie.isValid():
+                temp_movie.jumpToFrame(0)
+                first_frame = temp_movie.currentPixmap()
+                if not first_frame.isNull():
+                    self.new_pixmap = first_frame
+                    self.rotation = 0.0
+                temp_movie.deleteLater()
+
+    def _on_movie_frame_changed(self):
+        """Handle movie frame change"""
+        self._invalidate_pixmap_cache()
+        self.schedule_update()
 
     def close_application(self):
         """Start closing animation and exit"""
         if not self.closing_animation:
             self.closing_animation = True
             self.target_background_opacity = 0.0
-            QTimer.singleShot(500, QApplication.instance().quit)
+            QTimer.singleShot(300, QApplication.instance().quit)
 
     def get_supported_formats(self):
         """Get comprehensive list of supported formats"""
         base_formats = [
-            "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp", "*.tiff", "*.tif", 
+            "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.mng", "*.webp", "*.tiff", "*.tif", 
             "*.ico", "*.svg", "*.pbm", "*.pgm", "*.ppm", "*.xbm", "*.xpm"
         ]
         
-        raw_formats = [
-            "*.cr2", "*.cr3", "*.nef", "*.arw", "*.dng", "*.raf", "*.orf", 
-            "*.rw2", "*.pef", "*.srw", "*.x3f", "*.mrw", "*.dcr", "*.kdc", 
-            "*.erf", "*.mef", "*.mos", "*.ptx", "*.r3d", "*.fff", "*.iiq"
-        ]
-        
+        raw_formats = ["*" + ext for ext in self.RAW_EXTENSIONS]
         modern_formats = ["*.heic", "*.heif", "*.avif", "*.jxl"]
         scientific_formats = ["*.fits", "*.hdr", "*.exr", "*.pic", "*.psd"]
         
@@ -389,6 +460,8 @@ class BlurViewer(QWidget):
             self.movie.stop()
             self.movie = None
         
+        self._invalidate_pixmap_cache()
+        
         # Background loading
         if self.loading_thread and self.loading_thread.isRunning():
             self.loading_thread.quit()
@@ -396,14 +469,52 @@ class BlurViewer(QWidget):
         
         self.loading_thread = ImageLoader(path)
         self.loading_thread.imageLoaded.connect(self._on_image_loaded)
+        self.loading_thread.animatedImageLoaded.connect(self._on_animated_image_loaded)
         self.loading_thread.loadFailed.connect(self._on_load_failed)
         self.loading_thread.start()
 
     def _on_image_loaded(self, pixmap: QPixmap):
         """Handle successful image loading"""
+        # Stop any existing movie
+        if self.movie:
+            self.movie.stop()
+            self.movie = None
+        
         self.pixmap = pixmap
         self.rotation = 0.0
+        self._invalidate_pixmap_cache()
         self._setup_image_display()
+
+    def _on_animated_image_loaded(self, path: str):
+        """Handle successful animated image loading"""
+        # Stop any existing movie
+        if self.movie:
+            self.movie.stop()
+            self.movie.deleteLater()
+            self.movie = None
+        
+        # Create new movie
+        normalized_path = os.path.normpath(path)
+        self.movie = QMovie(normalized_path)
+        
+        if self.movie.isValid():
+            self.pixmap = None
+            self.rotation = 0.0
+            self._invalidate_pixmap_cache()
+            
+            # Setup movie for display
+            self.movie.frameChanged.connect(self._on_movie_frame_changed)
+            # Get first frame for sizing
+            self.movie.jumpToFrame(0)
+            first_frame = self.movie.currentPixmap()
+            
+            if not first_frame.isNull():
+                self.pixmap = first_frame  # Temporary for sizing calculations
+                self._setup_image_display()
+                self.pixmap = None  # Clear static pixmap, use movie instead
+                self.movie.start()
+        else:
+            self._on_load_failed("QMovie invalid")
 
     def _on_load_failed(self, error: str):
         """Handle loading failure"""
@@ -412,22 +523,23 @@ class BlurViewer(QWidget):
             self.old_pixmap = None
             self.new_pixmap = None
         
-        if not self.pixmap:
-            print("Failed to load image. Install required libraries:")
-            print("pip install pillow rawpy imageio opencv-python pillow-heif pillow-avif-plugin")
+        if not self.pixmap and not self.movie:
+            if "video file" not in error:
+                print(f"Failed to load image: {error}")
             QTimer.singleShot(3000, QApplication.instance().quit)
 
     def _setup_image_display(self):
         """Setup display parameters after image is loaded"""
-        if not self.pixmap or self.pixmap.isNull():
+        current_pixmap = self._get_current_pixmap()
+        if not current_pixmap or current_pixmap.isNull():
             return
 
-        screen_geom = QApplication.primaryScreen().availableGeometry()
+        screen_geom, screen_center = self._get_screen_info()
         
         # Calculate fit-to-screen scale
-        if self.pixmap.width() > 0 and self.pixmap.height() > 0:
-            scale_x = (screen_geom.width() * 0.9) / self.pixmap.width()
-            scale_y = (screen_geom.height() * 0.9) / self.pixmap.height()
+        if current_pixmap.width() > 0 and current_pixmap.height() > 0:
+            scale_x = (screen_geom.width() * 0.9) / current_pixmap.width()
+            scale_y = (screen_geom.height() * 0.9) / current_pixmap.height()
             self.fit_scale = min(scale_x, scale_y, 1.0)
         else:
             self.fit_scale = 1.0
@@ -437,7 +549,6 @@ class BlurViewer(QWidget):
         self.current_scale = self.fit_scale * 0.8
         
         # Center the image
-        screen_center = QPointF(screen_geom.center())
         self.target_offset = screen_center
         self.current_offset = screen_center
 
@@ -450,18 +561,19 @@ class BlurViewer(QWidget):
         self.opening_scale = 0.8
         self.opening_opacity = 0.0
         self.background_opacity = 0.0
-        self.target_background_opacity = 200.0
+        self.target_background_opacity = self.WINDOWED_BG_OPACITY
         self.pan_velocity = QPointF(0, 0)
 
         self.schedule_update()
 
     def get_image_bounds(self) -> QRectF:
         """Get the bounds of the image in screen coordinates"""
-        if not self.pixmap:
+        current_pixmap = self._get_current_pixmap()
+        if not current_pixmap or current_pixmap.isNull():
             return QRectF()
         
-        img_w = self.pixmap.width() * self.current_scale
-        img_h = self.pixmap.height() * self.current_scale
+        img_w = current_pixmap.width() * self.current_scale
+        img_h = current_pixmap.height() * self.current_scale
         
         return QRectF(
             self.current_offset.x() - img_w / 2,
@@ -477,28 +589,32 @@ class BlurViewer(QWidget):
 
     def _calculate_effective_dimensions(self):
         """Calculate effective image dimensions considering rotation"""
+        current_pixmap = self._get_current_pixmap()
+        if not current_pixmap or current_pixmap.isNull():
+            return 1, 1
+        
         if self.rotation % 180 == 90:  # 90° or 270°
-            return self.pixmap.height(), self.pixmap.width()
+            return current_pixmap.height(), current_pixmap.width()
         else:  # 0° or 180°
-            return self.pixmap.width(), self.pixmap.height()
+            return current_pixmap.width(), current_pixmap.height()
 
     def zoom_to(self, new_scale: float, focus_point: QPointF = None):
         """Zoom to specific scale with focus point"""
-        if not self.pixmap:
+        if not self.pixmap and not self.movie:
             return
         
         # Restrict zoom in fullscreen mode
         if self.is_fullscreen:
             screen_geom = QApplication.primaryScreen().geometry()
-            if self.pixmap.width() > 0 and self.pixmap.height() > 0:
-                effective_width, effective_height = self._calculate_effective_dimensions()
+            effective_width, effective_height = self._calculate_effective_dimensions()
+            if effective_width > 0 and effective_height > 0:
                 scale_x = screen_geom.width() / effective_width
                 scale_y = screen_geom.height() / effective_height
                 min_fullscreen_scale = min(scale_x, scale_y)
                 new_scale = max(min_fullscreen_scale, new_scale)
         
         # Clamp scale
-        new_scale = max(self.min_scale, min(self.max_scale, new_scale))
+        new_scale = max(self.MIN_SCALE, min(self.MAX_SCALE, new_scale))
         
         # Determine focus point
         if focus_point is None:
@@ -524,45 +640,56 @@ class BlurViewer(QWidget):
         self.target_scale = new_scale
 
     def fit_to_screen(self):
-        """Fit image to screen"""
-        if not self.pixmap:
+        """Fit image to screen - FIXED centering bug"""
+        if not self.pixmap and not self.movie:
             return
         
-        screen_geom = QApplication.primaryScreen().availableGeometry()
-        screen_center = QPointF(screen_geom.center())
+        screen_geom, screen_center = self._get_screen_info()
+        
+        # Recalculate fit scale in case of rotation changes
+        current_pixmap = self._get_current_pixmap()
+        if current_pixmap and not current_pixmap.isNull():
+            effective_width, effective_height = self._calculate_effective_dimensions()
+            if effective_width > 0 and effective_height > 0:
+                scale_x = (screen_geom.width() * 0.9) / effective_width
+                scale_y = (screen_geom.height() * 0.9) / effective_height
+                self.fit_scale = min(scale_x, scale_y, 1.0)
         
         self.target_scale = self.fit_scale
         self.target_offset = screen_center
+        # Reset current offset to ensure smooth centering
+        self.current_offset = QPointF(self.current_offset)  # Create a copy to force update
 
     def toggle_fullscreen(self):
         """Toggle fullscreen mode"""
         self.is_fullscreen = not self.is_fullscreen
+        self._clear_screen_cache()
         
         if self.is_fullscreen:
             self.saved_scale = self.target_scale
             self.saved_offset = QPointF(self.target_offset)
             self.showFullScreen()
-            self.target_background_opacity = 250.0
+            self.target_background_opacity = self.FULLSCREEN_BG_OPACITY
             self._fit_to_fullscreen()
         else:
             self.showNormal()
-            screen_geom = QApplication.primaryScreen().availableGeometry()
+            screen_geom, _ = self._get_screen_info()
             self.resize(screen_geom.width(), screen_geom.height())
             self.move(screen_geom.topLeft())
             self.target_scale = self.saved_scale
             self.target_offset = self.saved_offset
-            self.target_background_opacity = 200.0
+            self.target_background_opacity = self.WINDOWED_BG_OPACITY
 
     def _fit_to_fullscreen(self):
         """Fit image to fullscreen with animation"""
-        if not self.pixmap:
+        if not self.pixmap and not self.movie:
             return
         
         screen_geom = QApplication.primaryScreen().geometry()
         screen_center = QPointF(screen_geom.center())
         
-        if self.pixmap.width() > 0 and self.pixmap.height() > 0:
-            effective_width, effective_height = self._calculate_effective_dimensions()
+        effective_width, effective_height = self._calculate_effective_dimensions()
+        if effective_width > 0 and effective_height > 0:
             scale_x = screen_geom.width() / effective_width
             scale_y = screen_geom.height() / effective_height
             fit_scale = min(scale_x, scale_y)
@@ -574,14 +701,14 @@ class BlurViewer(QWidget):
 
     def _fit_to_fullscreen_instant(self):
         """Fit image to fullscreen instantly without animation"""
-        if not self.pixmap:
+        if not self.pixmap and not self.movie:
             return
         
         screen_geom = QApplication.primaryScreen().geometry()
         screen_center = QPointF(screen_geom.center())
         
-        if self.pixmap.width() > 0 and self.pixmap.height() > 0:
-            effective_width, effective_height = self._calculate_effective_dimensions()
+        effective_width, effective_height = self._calculate_effective_dimensions()
+        if effective_width > 0 and effective_height > 0:
             scale_x = screen_geom.width() / effective_width
             scale_y = screen_geom.height() / effective_height
             fit_scale = min(scale_x, scale_y)
@@ -596,11 +723,11 @@ class BlurViewer(QWidget):
 
     def wheelEvent(self, e: QWheelEvent):
         """Handle zoom with mouse wheel"""
-        if not self.pixmap:
+        if not self.pixmap and not self.movie:
             return
         
         delta = e.angleDelta().y() / 120.0
-        zoom_factor = 1.0 + (delta * 0.15)  # 15% per step
+        zoom_factor = 1.0 + (delta * self.ZOOM_STEP)
         new_scale = self.target_scale * zoom_factor
         self.zoom_to(new_scale, e.position())
         e.accept()
@@ -639,13 +766,13 @@ class BlurViewer(QWidget):
 
     def mouseDoubleClickEvent(self, e: QMouseEvent):
         """Handle double click - toggle between fit and 100%"""
-        if not self.pixmap:
+        if not self.pixmap and not self.movie:
             return
         
         if self.is_fullscreen:
             screen_geom = QApplication.primaryScreen().geometry()
-            if self.pixmap.width() > 0 and self.pixmap.height() > 0:
-                effective_width, effective_height = self._calculate_effective_dimensions()
+            effective_width, effective_height = self._calculate_effective_dimensions()
+            if effective_width > 0 and effective_height > 0:
                 scale_x = screen_geom.width() / effective_width
                 scale_y = screen_geom.height() / effective_height
                 fullscreen_fit_scale = min(scale_x, scale_y)
@@ -665,30 +792,52 @@ class BlurViewer(QWidget):
         e.accept()
 
     def animate(self):
-        """Main animation loop"""
+        """Main animation loop - optimized"""
         needs_update = False
         
-        # Navigation slide animation
+        # Navigation slide animation with improved easing
         if self.navigation_animation:
-            self.navigation_progress += 0.08
+            # Use smoother easing curve
+            self.navigation_progress = min(1.0, self.navigation_progress + self.NAVIGATION_SPEED)
             
             if self.navigation_progress >= 1.0:
-                self.navigation_progress = 1.0
                 self.navigation_animation = False
                 
+                # Handle animated images
                 if self.new_pixmap:
+                    # Stop any existing movie
+                    if self.movie:
+                        self.movie.stop()
+                        self.movie.deleteLater()
+                        self.movie = None
+                    
                     self.pixmap = self.new_pixmap
                     self.new_pixmap = None
+                    self._invalidate_pixmap_cache()
+                
                 self.old_pixmap = None
+                
+                # Smooth transition to centered position
+                _, screen_center = self._get_screen_info()
+                self.target_offset = screen_center
+                
+                # Reset to fit scale for new image
+                current_pixmap = self._get_current_pixmap()
+                if current_pixmap and not current_pixmap.isNull():
+                    screen_geom, _ = self._get_screen_info()
+                    scale_x = (screen_geom.width() * 0.9) / current_pixmap.width()
+                    scale_y = (screen_geom.height() * 0.9) / current_pixmap.height()
+                    self.fit_scale = min(scale_x, scale_y, 1.0)
+                    self.target_scale = self.fit_scale
                 
             needs_update = True
         
         # Opening animation
         if self.opening_animation:
-            self.opening_scale += (1.0 - self.opening_scale) * 0.15
-            self.opening_opacity += (1.0 - self.opening_opacity) * 0.2
+            self.opening_scale = min(1.0, self.opening_scale + (1.0 - self.opening_scale) * 0.15)
+            self.opening_opacity = min(1.0, self.opening_opacity + (1.0 - self.opening_opacity) * 0.2)
             
-            if abs(self.opening_scale - 1.0) < 0.01 and abs(self.opening_opacity - 1.0) < 0.01:
+            if self.opening_scale > 0.99 and self.opening_opacity > 0.99:
                 self.opening_scale = 1.0
                 self.opening_opacity = 1.0
                 self.opening_animation = False
@@ -697,31 +846,21 @@ class BlurViewer(QWidget):
         
         # Closing animation
         if self.closing_animation:
-            target_scale = 0.7
-            target_opacity = 0.0
-            
-            self.closing_scale += (target_scale - self.closing_scale) * 0.25
-            self.closing_opacity += (target_opacity - self.closing_opacity) * 0.25
-            
+            self.closing_scale += (0.7 - self.closing_scale) * 0.25
+            self.closing_opacity += (0.0 - self.closing_opacity) * 0.25
             needs_update = True
         
         # Background fade animation
-        if not self.navigation_animation:
-            bg_diff = self.target_background_opacity - self.background_opacity
-            if abs(bg_diff) > 1.0:
-                self.background_opacity += bg_diff * 0.15
-                needs_update = True
-            else:
-                self.background_opacity = self.target_background_opacity
+        bg_diff = self.target_background_opacity - self.background_opacity
+        if abs(bg_diff) > 1.0:
+            self.background_opacity += bg_diff * 0.15
+            needs_update = True
         
         # Pan inertia
-        if not self.is_panning:
-            if abs(self.pan_velocity.x()) > 0.1 or abs(self.pan_velocity.y()) > 0.1:
-                self.target_offset += self.pan_velocity
-                self.pan_velocity *= self.pan_friction
-                needs_update = True
-            else:
-                self.pan_velocity = QPointF(0, 0)
+        if not self.is_panning and (abs(self.pan_velocity.x()) > 0.1 or abs(self.pan_velocity.y()) > 0.1):
+            self.target_offset += self.pan_velocity
+            self.pan_velocity *= self.pan_friction
+            needs_update = True
         
         # Smooth interpolation to target values
         scale_diff = self.target_scale - self.current_scale
@@ -730,14 +869,10 @@ class BlurViewer(QWidget):
         if abs(scale_diff) > 0.001:
             self.current_scale += scale_diff * self.lerp_factor
             needs_update = True
-        else:
-            self.current_scale = self.target_scale
         
         if abs(offset_diff.x()) > 0.1 or abs(offset_diff.y()) > 0.1:
             self.current_offset += offset_diff * self.lerp_factor
             needs_update = True
-        else:
-            self.current_offset = self.target_offset
         
         if needs_update:
             self.schedule_update()
@@ -792,36 +927,31 @@ class BlurViewer(QWidget):
 
         # Zoom with +/- keys
         if e.key() == Qt.Key_Plus or e.key() == Qt.Key_Equal:
-            if self.pixmap:
-                screen_geom = QApplication.primaryScreen().availableGeometry()
-                screen_center = QPointF(screen_geom.center())
-                new_scale = self.target_scale * 1.2
-                self.zoom_to(new_scale, screen_center)
+            self._keyboard_zoom(self.ZOOM_FACTOR)
             e.accept()
             return
         elif e.key() == Qt.Key_Minus:
-            if self.pixmap:
-                screen_geom = QApplication.primaryScreen().availableGeometry()
-                screen_center = QPointF(screen_geom.center())
-                new_scale = self.target_scale / 1.2
-                self.zoom_to(new_scale, screen_center)
+            self._keyboard_zoom(1.0 / self.ZOOM_FACTOR)
             e.accept()
             return
 
         # Copy to clipboard
         if e.modifiers() & Qt.ControlModifier:
             if e.key() == Qt.Key_C or key_text == 'c' or key_text == 'с':
-                if self.pixmap:
-                    QGuiApplication.clipboard().setPixmap(self.pixmap)
+                current_pixmap = self._get_current_pixmap()
+                if current_pixmap and not current_pixmap.isNull():
+                    QGuiApplication.clipboard().setPixmap(current_pixmap)
                 return
 
         # Rotate
         if e.key() == Qt.Key_R or key_text == 'r' or key_text == 'к':
             self.rotation = (self.rotation + 90) % 360
+            self._invalidate_pixmap_cache()
             if self.is_fullscreen:
                 self._fit_to_fullscreen_instant()
             else:
-                self.update()
+                # Recalculate fit scale after rotation
+                self.fit_to_screen()
             return
         
         # Fit to screen
@@ -835,8 +965,23 @@ class BlurViewer(QWidget):
 
         super().keyPressEvent(e)
 
+    def _keyboard_zoom(self, factor: float):
+        """Handle keyboard zoom with given factor"""
+        if self.pixmap or self.movie:
+            _, screen_center = self._get_screen_info()
+            new_scale = self.target_scale * factor
+            self.zoom_to(new_scale, screen_center)
+
+    def _ease_in_out_cubic(self, t: float) -> float:
+        """Smooth easing function for animations"""
+        if t < 0.5:
+            return 4 * t * t * t
+        else:
+            p = 2 * t - 2
+            return 1 + p * p * p / 2
+
     def paintEvent(self, event):
-        """Main paint event"""
+        """Main paint event - optimized"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -850,33 +995,45 @@ class BlurViewer(QWidget):
             self._draw_slide_animation(painter)
         elif self.pixmap:
             self._draw_single_image(painter, self.pixmap)
+        elif self.movie and self.movie.state() == QMovie.MovieState.Running:
+            current_pixmap = self.movie.currentPixmap()
+            if not current_pixmap.isNull():
+                self._draw_single_image(painter, current_pixmap)
 
     def _draw_slide_animation(self, painter):
-        """Draw sliding animation between two images"""
-        t = self.navigation_progress
-        eased_t = 1 - pow(1 - t, 3)  # Ease out cubic
+        """Draw sliding animation between two images - improved smoothness"""
+        # Use smooth easing curve
+        t = self._ease_in_out_cubic(self.navigation_progress)
         
         screen_width = self.width()
-        slide_distance = screen_width * 1.2
+        # Reduced slide distance for less jarring transition
+        slide_distance = screen_width * 0.8
         
-        if self.navigation_direction > 0:  # Right arrow - move left
-            old_x_offset = -slide_distance * eased_t
-            new_x_offset = slide_distance * (1 - eased_t)
-        else:  # Left arrow - move right
-            old_x_offset = slide_distance * eased_t
-            new_x_offset = -slide_distance * (1 - eased_t)
+        # Add parallax effect for depth
+        parallax_factor = 0.3
         
-        # Draw old image
+        if self.navigation_direction > 0:  # Next image
+            old_x_offset = -slide_distance * t * parallax_factor
+            new_x_offset = slide_distance * (1 - t)
+        else:  # Previous image
+            old_x_offset = slide_distance * t * parallax_factor
+            new_x_offset = -slide_distance * (1 - t)
+        
+        # Draw old image with fade and scale
         painter.save()
         painter.translate(old_x_offset, 0)
-        painter.setOpacity(1.0 - eased_t * 0.3)
+        old_scale = 1.0 - t * 0.05  # Subtle scale down
+        painter.scale(old_scale, old_scale)
+        painter.setOpacity(1.0 - t * 0.5)  # Smoother fade
         self._draw_single_image(painter, self.old_pixmap)
         painter.restore()
         
-        # Draw new image
+        # Draw new image with fade and scale
         painter.save()
         painter.translate(new_x_offset, 0)
-        painter.setOpacity(0.7 + eased_t * 0.3)
+        new_scale = 0.95 + t * 0.05  # Scale up to normal
+        painter.scale(new_scale, new_scale)
+        painter.setOpacity(0.5 + t * 0.5)  # Fade in
         self._draw_single_image(painter, self.new_pixmap)
         painter.restore()
 
@@ -921,6 +1078,13 @@ class BlurViewer(QWidget):
         if self.loading_thread and self.loading_thread.isRunning():
             self.loading_thread.quit()
             self.loading_thread.wait()
+        
+        # Clean up movie
+        if self.movie:
+            self.movie.stop()
+            self.movie.deleteLater()
+            self.movie = None
+            
         super().closeEvent(event)
 
 

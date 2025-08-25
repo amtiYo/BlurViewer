@@ -1,13 +1,12 @@
 """
-Enhanced Minimalist Photo Viewer — with support for ALL image formats
-Optimized version with smooth zoom and pan animations
+BlurViewer v0.8-alpha
+Professional image viewer with advanced format support and smooth animations
 """
 
 import sys
-import math
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, QThread, Signal, QEasingCurve
+from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, QThread, Signal
 from PySide6.QtGui import (QPixmap, QImageReader, QPainter, QWheelEvent, QMouseEvent,
                            QColor, QImage, QGuiApplication, QMovie)
 from PySide6.QtWidgets import QApplication, QWidget, QFileDialog
@@ -56,25 +55,22 @@ class ImageLoader(QThread):
         """Comprehensive image loader supporting all formats"""
         self._register_all_plugins()
         
-        # First try Qt native formats (включая GIF)
+        # Try Qt native formats first
         reader = QImageReader(path)
         if reader.canRead():
             qimg = reader.read()
             if qimg and not qimg.isNull():
                 return QPixmap.fromImage(qimg)
         
-        # Специальная обработка для GIF через Pillow
+        # Special handling for GIF via Pillow
         if path.lower().endswith('.gif'):
             try:
                 from PIL import Image
                 im = Image.open(path)
                 
-                # Берем первый кадр для статичного отображения
                 if hasattr(im, 'is_animated') and im.is_animated:
                     im.seek(0)
-                    print(f"Animated GIF detected, showing first frame")
                 
-                # Конвертация в RGBA
                 if im.mode != 'RGBA':
                     im = im.convert('RGBA')
                 
@@ -82,8 +78,8 @@ class ImageLoader(QThread):
                 qimg = QImage(data, im.width, im.height, QImage.Format_RGBA8888)
                 if not qimg.isNull():
                     return QPixmap.fromImage(qimg)
-            except Exception as e:
-                print(f"Pillow GIF loading failed: {e}")
+            except Exception:
+                pass
         
         # Try RAW formats with rawpy
         raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', 
@@ -99,8 +95,8 @@ class ImageLoader(QThread):
                 bytes_per_line = ch * w
                 qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
                 return QPixmap.fromImage(qimg)
-            except Exception as e:
-                print(f"RAW processing failed: {e}")
+            except Exception:
+                pass
         
         # Try with Pillow for other formats
         try:
@@ -116,8 +112,8 @@ class ImageLoader(QThread):
             qimg = QImage(data, im.width, im.height, QImage.Format_RGBA8888)
             if not qimg.isNull():
                 return QPixmap.fromImage(qimg)
-        except Exception as e:
-            print(f"Pillow loading failed: {e}")
+        except Exception:
+            pass
         
         # Try with imageio
         try:
@@ -142,8 +138,8 @@ class ImageLoader(QThread):
                 qimg = QImage(img_array.data, w, h, QImage.Format_Grayscale8)
                 return QPixmap.fromImage(qimg)
                 
-        except Exception as e:
-            print(f"ImageIO loading failed: {e}")
+        except Exception:
+            pass
         
         # Try with OpenCV
         try:
@@ -164,13 +160,13 @@ class ImageLoader(QThread):
                 bytes_per_line = c * w
                 qimg = QImage(img.data, w, h, bytes_per_line, QImage.Format_RGBA8888)
                 return QPixmap.fromImage(qimg)
-        except Exception as e:
-            print(f"OpenCV loading failed: {e}")
+        except Exception:
+            pass
         
         return None
 
 
-class ImageViewer(QWidget):
+class BlurViewer(QWidget):
     def __init__(self, image_path: str | None = None):
         super().__init__()
         
@@ -184,33 +180,31 @@ class ImageViewer(QWidget):
         self.pixmap: QPixmap | None = None
         self.image_path = None
         self.movie: QMovie | None = None
-        self.is_animated = False
+        self.rotation = 0.0
         
         # Directory navigation
         self.current_directory = None
         self.image_files = []
         self.current_index = -1
 
-        # Transform state - разделяем target и current для плавной анимации
+        # Transform state
         self.target_scale = 1.0
         self.current_scale = 1.0
         self.target_offset = QPointF(0, 0)
         self.current_offset = QPointF(0, 0)
-        self.rotation = 0.0
+        self.fit_scale = 1.0
         
         # Zoom limits
         self.min_scale = 0.1
         self.max_scale = 20.0
-        self.fit_scale = 1.0  # Масштаб для "поместить в экран"
         
         # Animation parameters
-        self.lerp_factor = 0.15  # Скорость сглаживания (чем меньше, тем плавнее)
-        self.zoom_sensitivity = 0.001  # Чувствительность зума
-        self.pan_friction = 0.88  # Трение для инерции панорамирования
+        self.lerp_factor = 0.15
+        self.pan_friction = 0.88
         
         # Navigation animation
         self.navigation_animation = False
-        self.navigation_direction = 0  # -1 для влево, 1 для вправо
+        self.navigation_direction = 0
         self.navigation_progress = 0.0
         self.old_pixmap = None
         self.new_pixmap = None
@@ -219,7 +213,6 @@ class ImageViewer(QWidget):
         self.is_panning = False
         self.last_mouse_pos = QPointF(0, 0)
         self.pan_velocity = QPointF(0, 0)
-        self.zoom_center = QPointF(0, 0)
         
         # Opening animation
         self.opening_animation = True
@@ -235,15 +228,18 @@ class ImageViewer(QWidget):
         self.background_opacity = 0.0
         self.target_background_opacity = 200.0
         
+        # Fullscreen state
+        self.is_fullscreen = False
+        self.saved_scale = 1.0
+        self.saved_offset = QPointF(0, 0)
+        
         # Performance optimization
         self.update_pending = False
-        
-        # Loading thread
         self.loading_thread: ImageLoader | None = None
 
         # Main animation timer
         self.timer = QTimer(self)
-        self.timer.setInterval(16)  # ~60 FPS
+        self.timer.setInterval(16)  # 60 FPS
         self.timer.timeout.connect(self.animate)
         self.timer.start()
 
@@ -262,31 +258,24 @@ class ImageViewer(QWidget):
         if not directory.is_dir():
             return []
         
-        # Расширенный список поддерживаемых расширений
+        # Supported extensions
         supported_exts = {
-            # Основные форматы
             '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tiff', '.tif', '.ico', '.svg',
             '.pbm', '.pgm', '.ppm', '.xbm', '.xpm',
-            # RAW форматы
             '.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef', '.srw',
             '.x3f', '.mrw', '.dcr', '.kdc', '.erf', '.mef', '.mos', '.ptx', '.r3d', '.fff', '.iiq',
-            # Современные форматы
             '.heic', '.heif', '.avif', '.jxl',
-            # Научные/специальные форматы
             '.fits', '.hdr', '.exr', '.pic', '.psd'
         }
         
-        # Найти все файлы изображений
         image_files = []
         try:
             for file_path in directory.iterdir():
                 if file_path.is_file() and file_path.suffix.lower() in supported_exts:
                     image_files.append(str(file_path))
-        except (OSError, PermissionError) as e:
-            print(f"Error reading directory {directory_path}: {e}")
+        except (OSError, PermissionError):
             return []
         
-        # Сортировка по имени файла
         return sorted(image_files, key=lambda x: Path(x).name.lower())
 
     def setup_directory_navigation(self, image_path: str):
@@ -298,40 +287,31 @@ class ImageViewer(QWidget):
         self.current_directory = str(path_obj.parent)
         self.image_files = self.get_image_files_in_directory(self.current_directory)
         
-        # Find current image index
         try:
             self.current_index = self.image_files.index(str(path_obj))
         except ValueError:
             self.current_index = -1
 
     def navigate_to_image(self, direction: int):
-        """Navigate to next/previous image in directory with slide animation"""
-        if not self.image_files or self.current_index == -1:
-            print(f"Navigation failed: files={len(self.image_files) if self.image_files else 0}, index={self.current_index}")
-            return
-        
-        # Предотвращаем навигацию во время анимации
-        if self.navigation_animation:
+        """Navigate to next/previous image in directory"""
+        if not self.image_files or self.current_index == -1 or self.navigation_animation:
             return
         
         new_index = (self.current_index + direction) % len(self.image_files)
-        
-        # Защита от бесконечных циклов
         if new_index == self.current_index:
             return
-            
-        print(f"Navigating from {self.current_index} to {new_index} (direction: {direction})")
         
-        # Сохраняем текущее изображение для анимации
-        self.old_pixmap = self.pixmap
-        self.navigation_direction = direction
-        self.navigation_progress = 0.0
-        self.navigation_animation = True
+        # Setup slide animation only in windowed mode
+        if not self.is_fullscreen:
+            self.old_pixmap = self.pixmap
+            self.navigation_direction = direction
+            self.navigation_progress = 0.0
+            self.navigation_animation = True
         
         self.current_index = new_index
         new_path = self.image_files[self.current_index]
         
-        # Загружаем новое изображение в фоне
+        # Load new image in background
         if self.loading_thread and self.loading_thread.isRunning():
             self.loading_thread.quit()
             self.loading_thread.wait()
@@ -343,15 +323,24 @@ class ImageViewer(QWidget):
     
     def _on_navigation_image_loaded(self, pixmap: QPixmap):
         """Handle successful navigation image loading"""
-        self.new_pixmap = pixmap
-        # Не вызываем _setup_image_display, чтобы не сбросить анимацию
+        if self.is_fullscreen:
+            # Instant change in fullscreen mode
+            self.pixmap = pixmap
+            self.rotation = 0.0
+            self._fit_to_fullscreen_instant()
+        else:
+            # Use slide animation in windowed mode
+            self.new_pixmap = pixmap
+            self.rotation = 0.0
+            screen_geom = QApplication.primaryScreen().availableGeometry()
+            screen_center = QPointF(screen_geom.center())
+            self.target_offset = screen_center
 
     def close_application(self):
         """Start closing animation and exit"""
         if not self.closing_animation:
             self.closing_animation = True
             self.target_background_opacity = 0.0
-            # Close after animation completes (500ms)
             QTimer.singleShot(500, QApplication.instance().quit)
 
     def get_supported_formats(self):
@@ -382,39 +371,25 @@ class ImageViewer(QWidget):
         if fname:
             self.load_image(fname)
         else:
-            # Если файл не выбран - закрываем приложение
             QTimer.singleShot(0, QApplication.instance().quit)
 
-    def load_image(self, path: str, is_navigation: bool = False):
+    def load_image(self, path: str):
         """Load image with comprehensive format support"""
         self.image_path = path
+        self.setup_directory_navigation(path)
         
-        # Setup directory navigation only on first load
-        if not is_navigation:
-            self.setup_directory_navigation(path)
-        
-        # Reset animations - разные анимации для навигации и первой загрузки
-        if self.pixmap and not is_navigation:  # Полная анимация только при первой загрузке
+        # Reset animations
+        if self.pixmap:
             self.opening_animation = True
             self.opening_scale = 0.95
             self.opening_opacity = 0.2
-        elif is_navigation:  # Для навигации - только легкая анимация смены
-            self.opening_animation = True
-            self.opening_scale = 0.98
-            self.opening_opacity = 0.7
         
         # Stop any existing movie
         if self.movie:
             self.movie.stop()
             self.movie = None
-            self.is_animated = False
         
-        # Check for animated GIF - упрощенная обработка
-        if path.lower().endswith('.gif'):
-            # Попробуем загрузить GIF через обычный загрузчик вместо QMovie
-            print(f"Loading GIF: {path}")
-        
-        # Background loading for all formats
+        # Background loading
         if self.loading_thread and self.loading_thread.isRunning():
             self.loading_thread.quit()
             self.loading_thread.wait()
@@ -427,35 +402,19 @@ class ImageViewer(QWidget):
     def _on_image_loaded(self, pixmap: QPixmap):
         """Handle successful image loading"""
         self.pixmap = pixmap
-        self.is_animated = False
+        self.rotation = 0.0
         self._setup_image_display()
 
     def _on_load_failed(self, error: str):
         """Handle loading failure"""
-        print(f"Failed to load image: {error}")
-        
-        # Если это была навигация, сбрасываем анимацию
         if self.navigation_animation:
             self.navigation_animation = False
             self.old_pixmap = None
             self.new_pixmap = None
         
-        # Если это первая загрузка или нет изображений вообще
         if not self.pixmap:
-            print("Supported libraries status:")
-            
-            libs = ["PIL", "rawpy", "imageio", "cv2", "pillow_heif", "pillow_avif"]
-            for lib in libs:
-                try:
-                    __import__(lib)
-                    print(f"  ✓ {lib}")
-                except ImportError:
-                    print(f"  ✗ {lib}")
-            
-            print("\nTo install missing libraries:")
+            print("Failed to load image. Install required libraries:")
             print("pip install pillow rawpy imageio opencv-python pillow-heif pillow-avif-plugin")
-            
-            # Закрываем приложение с задержкой, чтобы пользователь успел увидеть сообщение
             QTimer.singleShot(3000, QApplication.instance().quit)
 
     def _setup_image_display(self):
@@ -463,7 +422,6 @@ class ImageViewer(QWidget):
         if not self.pixmap or self.pixmap.isNull():
             return
 
-        # Get screen geometry
         screen_geom = QApplication.primaryScreen().availableGeometry()
         
         # Calculate fit-to-screen scale
@@ -476,7 +434,7 @@ class ImageViewer(QWidget):
 
         # Set initial transform
         self.target_scale = self.fit_scale
-        self.current_scale = self.fit_scale * 0.8  # Start smaller for opening animation
+        self.current_scale = self.fit_scale * 0.8
         
         # Center the image
         screen_center = QPointF(screen_geom.center())
@@ -493,8 +451,6 @@ class ImageViewer(QWidget):
         self.opening_opacity = 0.0
         self.background_opacity = 0.0
         self.target_background_opacity = 200.0
-        
-        # Reset velocities
         self.pan_velocity = QPointF(0, 0)
 
         self.schedule_update()
@@ -519,10 +475,27 @@ class ImageViewer(QWidget):
         bounds = self.get_image_bounds()
         return bounds.contains(point)
 
+    def _calculate_effective_dimensions(self):
+        """Calculate effective image dimensions considering rotation"""
+        if self.rotation % 180 == 90:  # 90° or 270°
+            return self.pixmap.height(), self.pixmap.width()
+        else:  # 0° or 180°
+            return self.pixmap.width(), self.pixmap.height()
+
     def zoom_to(self, new_scale: float, focus_point: QPointF = None):
         """Zoom to specific scale with focus point"""
         if not self.pixmap:
             return
+        
+        # Restrict zoom in fullscreen mode
+        if self.is_fullscreen:
+            screen_geom = QApplication.primaryScreen().geometry()
+            if self.pixmap.width() > 0 and self.pixmap.height() > 0:
+                effective_width, effective_height = self._calculate_effective_dimensions()
+                scale_x = screen_geom.width() / effective_width
+                scale_y = screen_geom.height() / effective_height
+                min_fullscreen_scale = min(scale_x, scale_y)
+                new_scale = max(min_fullscreen_scale, new_scale)
         
         # Clamp scale
         new_scale = max(self.min_scale, min(self.max_scale, new_scale))
@@ -531,22 +504,18 @@ class ImageViewer(QWidget):
         if focus_point is None:
             focus_point = self.current_offset
         elif not self.point_in_image(focus_point):
-            # Mouse outside image - focus on image center
             focus_point = self.current_offset
         
         # Calculate the point in image space that should stay under the focus
         old_scale = self.current_scale
         if old_scale > 0:
-            # Vector from image center to focus point
             dx = focus_point.x() - self.current_offset.x()
             dy = focus_point.y() - self.current_offset.y()
             
-            # How this vector should change with new scale
             scale_ratio = new_scale / old_scale
             new_dx = dx * scale_ratio
             new_dy = dy * scale_ratio
             
-            # Calculate new offset to keep focus point fixed
             self.target_offset = QPointF(
                 focus_point.x() - new_dx,
                 focus_point.y() - new_dy
@@ -565,51 +534,99 @@ class ImageViewer(QWidget):
         self.target_scale = self.fit_scale
         self.target_offset = screen_center
 
+    def toggle_fullscreen(self):
+        """Toggle fullscreen mode"""
+        self.is_fullscreen = not self.is_fullscreen
+        
+        if self.is_fullscreen:
+            self.saved_scale = self.target_scale
+            self.saved_offset = QPointF(self.target_offset)
+            self.showFullScreen()
+            self.target_background_opacity = 250.0
+            self._fit_to_fullscreen()
+        else:
+            self.showNormal()
+            screen_geom = QApplication.primaryScreen().availableGeometry()
+            self.resize(screen_geom.width(), screen_geom.height())
+            self.move(screen_geom.topLeft())
+            self.target_scale = self.saved_scale
+            self.target_offset = self.saved_offset
+            self.target_background_opacity = 200.0
+
+    def _fit_to_fullscreen(self):
+        """Fit image to fullscreen with animation"""
+        if not self.pixmap:
+            return
+        
+        screen_geom = QApplication.primaryScreen().geometry()
+        screen_center = QPointF(screen_geom.center())
+        
+        if self.pixmap.width() > 0 and self.pixmap.height() > 0:
+            effective_width, effective_height = self._calculate_effective_dimensions()
+            scale_x = screen_geom.width() / effective_width
+            scale_y = screen_geom.height() / effective_height
+            fit_scale = min(scale_x, scale_y)
+        else:
+            fit_scale = 1.0
+        
+        self.target_scale = fit_scale
+        self.target_offset = screen_center
+
+    def _fit_to_fullscreen_instant(self):
+        """Fit image to fullscreen instantly without animation"""
+        if not self.pixmap:
+            return
+        
+        screen_geom = QApplication.primaryScreen().geometry()
+        screen_center = QPointF(screen_geom.center())
+        
+        if self.pixmap.width() > 0 and self.pixmap.height() > 0:
+            effective_width, effective_height = self._calculate_effective_dimensions()
+            scale_x = screen_geom.width() / effective_width
+            scale_y = screen_geom.height() / effective_height
+            fit_scale = min(scale_x, scale_y)
+        else:
+            fit_scale = 1.0
+        
+        self.target_scale = fit_scale
+        self.current_scale = fit_scale
+        self.target_offset = screen_center
+        self.current_offset = screen_center
+        self.schedule_update()
+
     def wheelEvent(self, e: QWheelEvent):
         """Handle zoom with mouse wheel"""
         if not self.pixmap:
             return
         
-        # Get zoom delta
-        delta = e.angleDelta().y() / 120.0  # Standard wheel step
-        
-        # Calculate zoom factor with smooth scaling
+        delta = e.angleDelta().y() / 120.0
         zoom_factor = 1.0 + (delta * 0.15)  # 15% per step
-        
-        # Apply zoom
         new_scale = self.target_scale * zoom_factor
         self.zoom_to(new_scale, e.position())
-        
         e.accept()
 
     def mousePressEvent(self, e: QMouseEvent):
         """Handle mouse press"""
         if e.button() == Qt.LeftButton:
             if self.point_in_image(e.position()):
-                # Start panning
                 self.is_panning = True
                 self.last_mouse_pos = e.position()
                 self.pan_velocity = QPointF(0, 0)
                 e.accept()
             else:
-                # Click outside image - exit
-                self.close_application()
+                # Exit only in windowed mode
+                if not self.is_fullscreen:
+                    self.close_application()
         elif e.button() == Qt.RightButton:
             self.close_application()
 
     def mouseMoveEvent(self, e: QMouseEvent):
         """Handle mouse move"""
         if self.is_panning:
-            # Calculate movement delta
             delta = e.position() - self.last_mouse_pos
-            
-            # Apply movement directly to current position for immediate response
             self.current_offset += delta
             self.target_offset = QPointF(self.current_offset)
-            
-            # Store velocity for inertia
             self.pan_velocity = delta * 0.6
-            
             self.last_mouse_pos = e.position()
             self.schedule_update()
             e.accept()
@@ -625,11 +642,24 @@ class ImageViewer(QWidget):
         if not self.pixmap:
             return
         
+        if self.is_fullscreen:
+            screen_geom = QApplication.primaryScreen().geometry()
+            if self.pixmap.width() > 0 and self.pixmap.height() > 0:
+                effective_width, effective_height = self._calculate_effective_dimensions()
+                scale_x = screen_geom.width() / effective_width
+                scale_y = screen_geom.height() / effective_height
+                fullscreen_fit_scale = min(scale_x, scale_y)
+                
+                if abs(self.current_scale - fullscreen_fit_scale) < 0.01:
+                    self.zoom_to(1.0, e.position())
+                else:
+                    self._fit_to_fullscreen()
+            e.accept()
+            return
+        
         if abs(self.target_scale - self.fit_scale) < 0.01:
-            # Currently at fit scale, zoom to 100%
             self.zoom_to(1.0, e.position())
         else:
-            # Zoom to fit
             self.fit_to_screen()
         
         e.accept()
@@ -640,14 +670,12 @@ class ImageViewer(QWidget):
         
         # Navigation slide animation
         if self.navigation_animation:
-            self.navigation_progress += 0.08  # Скорость анимации слайда
+            self.navigation_progress += 0.08
             
             if self.navigation_progress >= 1.0:
-                # Анимация завершена
                 self.navigation_progress = 1.0
                 self.navigation_animation = False
                 
-                # Устанавливаем новое изображение
                 if self.new_pixmap:
                     self.pixmap = self.new_pixmap
                     self.new_pixmap = None
@@ -677,7 +705,7 @@ class ImageViewer(QWidget):
             
             needs_update = True
         
-        # Background fade animation (не изменяем при навигации)
+        # Background fade animation
         if not self.navigation_animation:
             bg_diff = self.target_background_opacity - self.background_opacity
             if abs(bg_diff) > 1.0:
@@ -686,7 +714,7 @@ class ImageViewer(QWidget):
             else:
                 self.background_opacity = self.target_background_opacity
         
-        # Pan inertia (when not actively panning)
+        # Pan inertia
         if not self.is_panning:
             if abs(self.pan_velocity.x()) > 0.1 or abs(self.pan_velocity.y()) > 0.1:
                 self.target_offset += self.pan_velocity
@@ -711,7 +739,6 @@ class ImageViewer(QWidget):
         else:
             self.current_offset = self.target_offset
         
-        # Update display if needed
         if needs_update:
             self.schedule_update()
 
@@ -747,35 +774,63 @@ class ImageViewer(QWidget):
             self.close_application()
             return
 
-        # Navigation with arrow keys
-        if e.key() == Qt.Key_Left:
-            self.navigate_to_image(-1)  # Previous image
-            e.accept()
-            return
-        elif e.key() == Qt.Key_Right:
-            self.navigate_to_image(1)   # Next image
+        if e.key() == Qt.Key_F11:
+            self.toggle_fullscreen()
             e.accept()
             return
 
-        # Copy to clipboard (Ctrl+C or Ctrl+С)
+        # Directory navigation with A and D keys
+        key_text = e.text().lower()
+        if e.key() == Qt.Key_A or key_text == 'a' or key_text == 'ф':
+            self.navigate_to_image(-1)
+            e.accept()
+            return
+        elif e.key() == Qt.Key_D or key_text == 'd' or key_text == 'в':
+            self.navigate_to_image(1)
+            e.accept()
+            return
+
+        # Zoom with +/- keys
+        if e.key() == Qt.Key_Plus or e.key() == Qt.Key_Equal:
+            if self.pixmap:
+                screen_geom = QApplication.primaryScreen().availableGeometry()
+                screen_center = QPointF(screen_geom.center())
+                new_scale = self.target_scale * 1.2
+                self.zoom_to(new_scale, screen_center)
+            e.accept()
+            return
+        elif e.key() == Qt.Key_Minus:
+            if self.pixmap:
+                screen_geom = QApplication.primaryScreen().availableGeometry()
+                screen_center = QPointF(screen_geom.center())
+                new_scale = self.target_scale / 1.2
+                self.zoom_to(new_scale, screen_center)
+            e.accept()
+            return
+
+        # Copy to clipboard
         if e.modifiers() & Qt.ControlModifier:
-            key_text = e.text().lower()
             if e.key() == Qt.Key_C or key_text == 'c' or key_text == 'с':
                 if self.pixmap:
                     QGuiApplication.clipboard().setPixmap(self.pixmap)
                 return
 
-        # Rotate (R or К)
-        key_text = e.text().lower()
+        # Rotate
         if e.key() == Qt.Key_R or key_text == 'r' or key_text == 'к':
             self.rotation = (self.rotation + 90) % 360
-            self.update()
+            if self.is_fullscreen:
+                self._fit_to_fullscreen_instant()
+            else:
+                self.update()
             return
         
-        # Fit to screen (F or А, or Space)
+        # Fit to screen
         if (e.key() == Qt.Key_F or key_text == 'f' or key_text == 'а' or 
             e.key() == Qt.Key_Space):
-            self.fit_to_screen()
+            if self.is_fullscreen:
+                self._fit_to_fullscreen()
+            else:
+                self.fit_to_screen()
             return
 
         super().keyPressEvent(e)
@@ -793,40 +848,35 @@ class ImageViewer(QWidget):
         # Navigation slide animation
         if self.navigation_animation and self.old_pixmap and self.new_pixmap:
             self._draw_slide_animation(painter)
-        # Normal drawing
         elif self.pixmap:
             self._draw_single_image(painter, self.pixmap)
 
     def _draw_slide_animation(self, painter):
         """Draw sliding animation between two images"""
-        # Easing function for smooth animation
         t = self.navigation_progress
-        # Ease out cubic for smooth deceleration
-        eased_t = 1 - pow(1 - t, 3)
+        eased_t = 1 - pow(1 - t, 3)  # Ease out cubic
         
         screen_width = self.width()
+        slide_distance = screen_width * 1.2
         
-        # Calculate slide offsets
-        slide_distance = screen_width * 1.2  # Немного больше экрана для плавности
-        
-        if self.navigation_direction > 0:  # Правая стрелка - двигаемся влево
+        if self.navigation_direction > 0:  # Right arrow - move left
             old_x_offset = -slide_distance * eased_t
             new_x_offset = slide_distance * (1 - eased_t)
-        else:  # Левая стрелка - двигаемся вправо
+        else:  # Left arrow - move right
             old_x_offset = slide_distance * eased_t
             new_x_offset = -slide_distance * (1 - eased_t)
         
-        # Draw old image (уходящая)
+        # Draw old image
         painter.save()
         painter.translate(old_x_offset, 0)
-        painter.setOpacity(1.0 - eased_t * 0.3)  # Легкое затухание
+        painter.setOpacity(1.0 - eased_t * 0.3)
         self._draw_single_image(painter, self.old_pixmap)
         painter.restore()
         
-        # Draw new image (прилетающая)
+        # Draw new image
         painter.save()
         painter.translate(new_x_offset, 0)
-        painter.setOpacity(0.7 + eased_t * 0.3)  # Легкое появление
+        painter.setOpacity(0.7 + eased_t * 0.3)
         self._draw_single_image(painter, self.new_pixmap)
         painter.restore()
 
@@ -881,7 +931,7 @@ if __name__ == '__main__':
     if len(sys.argv) >= 2:
         path = sys.argv[1]
 
-    viewer = ImageViewer(path)
+    viewer = BlurViewer(path)
     viewer.show()
 
     sys.exit(app.exec())

@@ -3,7 +3,7 @@
 
 [English](./README.md) | Русский | [Deutsch](./README.de.md)
 
-**BlurViewer v0.8-alpha** - Профессиональный просмотрщик изображений с расширенной поддержкой форматов и плавными анимациями.  
+**BlurViewer** - Профессиональный просмотрщик изображений с расширенной поддержкой форматов и плавными анимациями.  
 Молниеносно быстрый, минималистичный и многофункциональный просмотрщик фото для Windows.
 
 ![Release Download](https://img.shields.io/github/downloads/amtiYo/BlurViewer/total?style=flat-square)

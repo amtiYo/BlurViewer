@@ -171,7 +171,12 @@ We welcome contributions! Here's how to get started:
 
 ### Development Setup
 ```bash
-pip install PySide6 pillow rawpy imageio opencv-python pillow-heif pillow-avif-plugin
+# Clone and install in development mode
+git clone https://github.com/amtiYo/BlurViewer.git
+cd BlurViewer
+pip install -e .
+
+# Run the application
 python BlurViewer.py
 ```
 

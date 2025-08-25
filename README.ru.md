@@ -171,7 +171,12 @@
 
 ### Настройка среды разработки
 ```bash
-pip install PySide6 pillow rawpy imageio opencv-python pillow-heif pillow-avif-plugin
+# Клонировать и установить в режиме разработки
+git clone https://github.com/amtiYo/BlurViewer.git
+cd BlurViewer
+pip install -e .
+
+# Запустить приложение
 python BlurViewer.py
 ```
 

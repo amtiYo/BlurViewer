@@ -1,5 +1,5 @@
 """
-BlurViewer v0.8.1-alpha
+BlurViewer v0.8.1
 Professional image viewer with advanced format support and smooth animations
 """
 
@@ -1088,7 +1088,8 @@ class BlurViewer(QWidget):
         super().closeEvent(event)
 
 
-if __name__ == '__main__':
+def main():
+    """Main entry point for the application"""
     app = QApplication(sys.argv)
 
     path = None
@@ -1099,3 +1100,7 @@ if __name__ == '__main__':
     viewer.show()
 
     sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    main()

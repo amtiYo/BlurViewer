@@ -171,7 +171,12 @@ Wir begrüßen Beiträge! So fangen Sie an:
 
 ### Entwicklungsumgebung einrichten
 ```bash
-pip install PySide6 pillow rawpy imageio opencv-python pillow-heif pillow-avif-plugin
+# Repository klonen und im Entwicklungsmodus installieren
+git clone https://github.com/amtiYo/BlurViewer.git
+cd BlurViewer
+pip install -e .
+
+# Anwendung ausführen
 python BlurViewer.py
 ```
 

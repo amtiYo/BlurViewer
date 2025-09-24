@@ -17,9 +17,12 @@ from PySide6.QtWidgets import QApplication, QWidget, QFileDialog
 
 class ImageLoader(QThread):
     """Background thread for loading heavy image formats"""
-    imageLoaded = Signal(QPixmap)
+
+    imageLoaded = Signal(str, QPixmap)
     animatedImageLoaded = Signal(str)
-    loadFailed = Signal(str)
+    loadFailed = Signal(str, str)
+
+    _plugins_registered = False
     
     def __init__(self, path):
         super().__init__()
@@ -29,7 +32,7 @@ class ImageLoader(QThread):
         try:
             # Quick format validation for common misnamed files
             if not os.path.exists(self.path):
-                self.loadFailed.emit("File does not exist")
+                self.loadFailed.emit(self.path, "File does not exist")
                 return
             
             # Check file header for common format issues
@@ -39,12 +42,15 @@ class ImageLoader(QThread):
                     
                     # Check for video files with wrong extensions
                     if self.path.lower().endswith(('.gif', '.png', '.jpg')) and header[4:8] == b'ftyp':
-                        self.loadFailed.emit("This is a video file (MP4), not an image. Use a video player instead.")
+                        self.loadFailed.emit(self.path, "This is a video file (MP4), not an image. Use a video player instead.")
                         return
             except Exception:
                 pass
             
             # Check if it's an animated format first
+            if self.isInterruptionRequested():
+                return
+
             if Path(self.path).suffix.lower() in BlurViewer.ANIMATED_EXTENSIONS:
                 movie = self._try_load_animated(self.path)
                 if movie and movie.isValid():
@@ -53,19 +59,23 @@ class ImageLoader(QThread):
                         movie.jumpToFrame(0)
                         first_frame = movie.currentPixmap()
                         if not first_frame.isNull():
+                            if self.isInterruptionRequested():
+                                return
                             self.animatedImageLoaded.emit(self.path)
                             return
                     except Exception:
                         pass
-            
+
             # Load as static image
             pixmap = self._load_image_comprehensive(self.path)
             if pixmap and not pixmap.isNull():
-                self.imageLoaded.emit(pixmap)
+                if self.isInterruptionRequested():
+                    return
+                self.imageLoaded.emit(self.path, pixmap)
             else:
-                self.loadFailed.emit("Failed to load image")
+                self.loadFailed.emit(self.path, "Failed to load image")
         except Exception as e:
-            self.loadFailed.emit(str(e))
+            self.loadFailed.emit(self.path, str(e))
     
     def _try_load_animated(self, path: str) -> QMovie:
         """Try to load animated image formats using QMovie"""
@@ -80,49 +90,67 @@ class ImageLoader(QThread):
 
     def _register_all_plugins(self):
         """Register all available image format plugins"""
+        if ImageLoader._plugins_registered:
+            return
+
         try:
-            import pillow_heif
+            import pillow_heif  # type: ignore
+
             pillow_heif.register_heif_opener()
-        except:
+        except Exception:
             pass
-        
+
         try:
-            import pillow_avif
-        except:
+            import pillow_avif  # type: ignore
+
+            if hasattr(pillow_avif, "register_avif_opener"):
+                pillow_avif.register_avif_opener()
+        except Exception:
             pass
+
+        ImageLoader._plugins_registered = True
     
     def _load_image_comprehensive(self, path: str) -> QPixmap:
         """Comprehensive image loader supporting all formats"""
         self._register_all_plugins()
-        
+
+        if self.isInterruptionRequested():
+            return None
+
         # Try Qt native formats first
         normalized_path = os.path.normpath(path)
-        
+
         reader = QImageReader(normalized_path)
+        reader.setAutoTransform(True)
         if reader.canRead():
             qimg = reader.read()
             if qimg and not qimg.isNull():
+                if qimg.format() != QImage.Format_RGBA8888:
+                    qimg = qimg.convertToFormat(QImage.Format_RGBA8888)
                 return QPixmap.fromImage(qimg)
-        
+
         # Try with Pillow for other formats
         try:
             from PIL import Image
+
             with open(normalized_path, 'rb') as f:
+                if self.isInterruptionRequested():
+                    return None
+
                 im = Image.open(f)
                 im.load()
-                
-                if im.mode not in ('RGBA', 'RGB'):
+
+                if im.mode != 'RGBA':
                     im = im.convert('RGBA')
-                elif im.mode == 'RGB':
-                    im = im.convert('RGBA')
-                    
+
                 data = im.tobytes('raw', 'RGBA')
-                qimg = QImage(data, im.width, im.height, QImage.Format_RGBA8888)
+                bytes_per_line = im.width * 4
+                qimg = QImage(data, im.width, im.height, bytes_per_line, QImage.Format_RGBA8888)
                 if not qimg.isNull():
-                    return QPixmap.fromImage(qimg)
+                    return QPixmap.fromImage(qimg.copy())
         except Exception:
             pass
-        
+
         return None
 
 
@@ -220,6 +248,7 @@ class BlurViewer(QWidget):
         self.update_pending = False
         self.loading_thread: Optional[ImageLoader] = None
         self._needs_cache_update = True  # Flag for pixmap cache
+        self._active_request_path: Optional[str] = None
 
         # Main animation timer with adaptive FPS
         self.timer = QTimer(self)
@@ -276,6 +305,38 @@ class BlurViewer(QWidget):
         """Clear cached screen info"""
         self._screen_geom = None
         self._screen_center = None
+
+    def _stop_loading_thread(self):
+        """Stop the active loading thread if it is running"""
+        if self.loading_thread:
+            self.loading_thread.requestInterruption()
+            self.loading_thread.wait()
+            self.loading_thread.deleteLater()
+            self.loading_thread = None
+        self._active_request_path = None
+
+    def _on_loader_finished(self):
+        """Cleanup when the loading thread finishes"""
+        thread = self.sender()
+        if thread is self.loading_thread:
+            self.loading_thread = None
+        if thread:
+            thread.deleteLater()
+
+    def _start_loading_thread(self, path: str, static_slot, animated_slot):
+        """Helper to start a loading thread for the given path"""
+        normalized_path = os.path.normpath(path)
+        self._stop_loading_thread()
+        self._active_request_path = normalized_path
+
+        thread = ImageLoader(normalized_path)
+        thread.imageLoaded.connect(static_slot)
+        thread.animatedImageLoaded.connect(animated_slot)
+        thread.loadFailed.connect(self._on_load_failed)
+        thread.finished.connect(self._on_loader_finished)
+
+        self.loading_thread = thread
+        thread.start()
 
     def get_image_files_in_directory(self, directory_path: str):
         """Get list of supported image files in directory"""
@@ -338,54 +399,58 @@ class BlurViewer(QWidget):
         new_path = self.image_files[self.current_index]
         
         # Load new image in background
-        if self.loading_thread and self.loading_thread.isRunning():
-            self.loading_thread.quit()
-            self.loading_thread.wait()
-        
-        self.loading_thread = ImageLoader(new_path)
-        self.loading_thread.imageLoaded.connect(self._on_navigation_image_loaded)
-        self.loading_thread.animatedImageLoaded.connect(self._on_navigation_animated_loaded)
-        self.loading_thread.loadFailed.connect(self._on_load_failed)
-        self.loading_thread.start()
+        self._start_loading_thread(new_path, self._on_navigation_image_loaded, self._on_navigation_animated_loaded)
     
-    def _on_navigation_image_loaded(self, pixmap: QPixmap):
+    def _on_navigation_image_loaded(self, path: str, pixmap: QPixmap):
         """Handle successful navigation image loading"""
+        normalized_path = os.path.normpath(path)
+        if self._active_request_path and normalized_path != self._active_request_path:
+            return
+
+        self._active_request_path = None
         self._invalidate_pixmap_cache()
-        
+
         if self.is_fullscreen:
             # Stop any movie
             if self.movie:
                 self.movie.stop()
                 self.movie.deleteLater()
                 self.movie = None
-            
+
             self.pixmap = pixmap
+            self.image_path = normalized_path
             self.rotation = 0.0
             self._fit_to_fullscreen_instant()
         else:
             # Use slide animation in windowed mode
             self.new_pixmap = pixmap
+            self.image_path = normalized_path
             self.rotation = 0.0
 
     def _on_navigation_animated_loaded(self, path: str):
         """Handle successful navigation animated image loading"""
+        normalized_path = os.path.normpath(path)
+        if self._active_request_path and normalized_path != self._active_request_path:
+            return
+
+        self._active_request_path = None
         self._invalidate_pixmap_cache()
-        
+
         if self.is_fullscreen:
             # Stop any existing movie
             if self.movie:
                 self.movie.stop()
                 self.movie.deleteLater()
                 self.movie = None
-            
+
             # Create new movie
-            normalized_path = os.path.normpath(path)
             self.movie = QMovie(normalized_path)
-            
+
             if self.movie and self.movie.isValid():
                 self.pixmap = None
+                self.image_path = normalized_path
                 self.rotation = 0.0
-                
+
                 self.movie.frameChanged.connect(self._on_movie_frame_changed)
                 self.movie.jumpToFrame(0)
                 first_frame = self.movie.currentPixmap()
@@ -396,14 +461,14 @@ class BlurViewer(QWidget):
                     self.movie.start()
         else:
             # Use slide animation in windowed mode
-            normalized_path = os.path.normpath(path)
             temp_movie = QMovie(normalized_path)
-            
+
             if temp_movie and temp_movie.isValid():
                 temp_movie.jumpToFrame(0)
                 first_frame = temp_movie.currentPixmap()
                 if not first_frame.isNull():
                     self.new_pixmap = first_frame
+                    self.image_path = normalized_path
                     self.rotation = 0.0
                 temp_movie.deleteLater()
 
@@ -446,59 +511,68 @@ class BlurViewer(QWidget):
 
     def load_image(self, path: str):
         """Load image with comprehensive format support"""
-        self.image_path = path
-        self.setup_directory_navigation(path)
-        
+        normalized_path = os.path.normpath(path)
+        self.image_path = normalized_path
+        self.setup_directory_navigation(normalized_path)
+
         # Reset animations
         if self.pixmap:
             self.opening_animation = True
             self.opening_scale = 0.95
             self.opening_opacity = 0.2
-        
-        # Stop any existing movie
-        if self.movie:
-            self.movie.stop()
-            self.movie = None
-        
-        self._invalidate_pixmap_cache()
-        
-        # Background loading
-        if self.loading_thread and self.loading_thread.isRunning():
-            self.loading_thread.quit()
-            self.loading_thread.wait()
-        
-        self.loading_thread = ImageLoader(path)
-        self.loading_thread.imageLoaded.connect(self._on_image_loaded)
-        self.loading_thread.animatedImageLoaded.connect(self._on_animated_image_loaded)
-        self.loading_thread.loadFailed.connect(self._on_load_failed)
-        self.loading_thread.start()
 
-    def _on_image_loaded(self, pixmap: QPixmap):
-        """Handle successful image loading"""
         # Stop any existing movie
         if self.movie:
             self.movie.stop()
             self.movie = None
-        
+
+        self._invalidate_pixmap_cache()
+        self._stop_loading_thread()
+
+        if not os.path.isfile(normalized_path):
+            self._on_load_failed(normalized_path, "File does not exist")
+            return
+
+        # Background loading
+        self._start_loading_thread(normalized_path, self._on_image_loaded, self._on_animated_image_loaded)
+
+    def _on_image_loaded(self, path: str, pixmap: QPixmap):
+        """Handle successful image loading"""
+        normalized_path = os.path.normpath(path)
+        if self._active_request_path and normalized_path != self._active_request_path:
+            return
+
+        self._active_request_path = None
+        # Stop any existing movie
+        if self.movie:
+            self.movie.stop()
+            self.movie = None
+
         self.pixmap = pixmap
+        self.image_path = normalized_path
         self.rotation = 0.0
         self._invalidate_pixmap_cache()
         self._setup_image_display()
 
     def _on_animated_image_loaded(self, path: str):
         """Handle successful animated image loading"""
+        normalized_path = os.path.normpath(path)
+        if self._active_request_path and normalized_path != self._active_request_path:
+            return
+
+        self._active_request_path = None
         # Stop any existing movie
         if self.movie:
             self.movie.stop()
             self.movie.deleteLater()
             self.movie = None
-        
+
         # Create new movie
-        normalized_path = os.path.normpath(path)
         self.movie = QMovie(normalized_path)
-        
+
         if self.movie.isValid():
             self.pixmap = None
+            self.image_path = normalized_path
             self.rotation = 0.0
             self._invalidate_pixmap_cache()
             
@@ -514,15 +588,21 @@ class BlurViewer(QWidget):
                 self.pixmap = None  # Clear static pixmap, use movie instead
                 self.movie.start()
         else:
-            self._on_load_failed("QMovie invalid")
+            self._on_load_failed(normalized_path, "QMovie invalid")
 
-    def _on_load_failed(self, error: str):
+    def _on_load_failed(self, path: str, error: str):
         """Handle loading failure"""
+        normalized_path = os.path.normpath(path) if path else None
+        if self._active_request_path and normalized_path != self._active_request_path:
+            return
+
+        self._active_request_path = None
+
         if self.navigation_animation:
             self.navigation_animation = False
             self.old_pixmap = None
             self.new_pixmap = None
-        
+
         if not self.pixmap and not self.movie:
             if "video file" not in error:
                 print(f"Failed to load image: {error}")
@@ -1075,10 +1155,8 @@ class BlurViewer(QWidget):
 
     def closeEvent(self, event):
         """Clean up on close"""
-        if self.loading_thread and self.loading_thread.isRunning():
-            self.loading_thread.quit()
-            self.loading_thread.wait()
-        
+        self._stop_loading_thread()
+
         # Clean up movie
         if self.movie:
             self.movie.stop()

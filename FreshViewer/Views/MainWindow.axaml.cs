@@ -121,15 +121,10 @@ public sealed partial class MainWindow : Window
 
     private void ConfigureWindowChrome()
     {
-        TransparencyLevelHint = new[]
-        {
-            WindowTransparencyLevel.Mica,
-            WindowTransparencyLevel.AcrylicBlur,
-            WindowTransparencyLevel.Blur,
-            WindowTransparencyLevel.Transparent
-        };
+        // Упрощённый фон: без Mica/Acrylic/Blur, только обычный непрозрачный градиент.
+        TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
 
-        Background = Brushes.Transparent;
+        Background = Brushes.Transparent; // оставляем прозрачный бэкграунд окна, сам фон рисуем в XAML градиентом
         ExtendClientAreaToDecorationsHint = true;
         ExtendClientAreaChromeHints = Avalonia.Platform.ExtendClientAreaChromeHints.PreferSystemChrome;
         ExtendClientAreaTitleBarHeightHint = 32;

@@ -57,21 +57,21 @@ namespace FreshViewer.UI.LiquidGlass
             {
                 _isRendering = true;
 
-                // 1. 首先，调用 base.Render(context) 让 Avalonia 绘制所有子控件。
-                //    这样就完成了标准的渲染通道。
-                base.Render(context);
-
-                if (!LiquidGlassPlatform.SupportsAdvancedEffects)
+                // ВАЖНО: сначала рисуем эффект стекла по снимку уже отрисованного фона,
+                // затем поверх — дочерний контент. Иначе непрозрачный шейдер перекрывает UI.
+                if (LiquidGlassPlatform.SupportsAdvancedEffects)
                 {
+                    // Поверх детей накладываем жидкостный шейдер.
+                    context.Custom(new LiquidGlassDrawOperation(new Rect(0, 0, Bounds.Width, Bounds.Height), this));
+                }
+                else
+                {
+                    // Если шейдеры недоступны — рисуем прозрачное стекло поверх.
                     DrawFallbackOverlay(context);
-                    return;
                 }
 
-                // 2. 在子控件被绘制之后，插入我们的自定义模糊操作。
-                //    这会在已渲染的子控件之上绘制我们的效果，
-                //    但效果本身采样的是原始背景，从而产生子控件在玻璃之上的错觉。
-                //    这个机制打破了渲染循环。
-                context.Custom(new LiquidGlassDrawOperation(new Rect(0, 0, Bounds.Width, Bounds.Height), this));
+                // Теперь выводим дочерние элементы поверх стекла
+                base.Render(context);
             }
             finally
             {
@@ -234,45 +234,31 @@ namespace FreshViewer.UI.LiquidGlass
             {
                 if (_effect is null) return;
 
-                // 1. 截取当前绘图表面的快照。这会捕获到目前为止绘制的所有内容。
-                using var backgroundSnapshot = lease.SkSurface?.Snapshot();
-                if (backgroundSnapshot is null) return;
+                var pixelWidth = (int)Math.Ceiling(_bounds.Width);
+                var pixelHeight = (int)Math.Ceiling(_bounds.Height);
+                if (pixelWidth <= 0 || pixelHeight <= 0) return;
 
-                // 2. 获取画布的反转变换矩阵。这对于将全屏快照正确映射到
-                //    我们本地控件的坐标空间至关重要。
-                if (!canvas.TotalMatrix.TryInvert(out var currentInvertedTransform))
+                using var snapshot = lease.SkSurface?.Snapshot();
+                if (snapshot is null) return;
+
+                if (!canvas.TotalMatrix.TryInvert(out var inverse))
+                {
                     return;
+                }
 
-                // 3. 从背景快照创建一个着色器，并应用反转变换。
-                //    这个着色器现在将正确地采样我们控件正后方的像素。
-                using var backdropShader = SKShader.CreateImage(backgroundSnapshot, SKShaderTileMode.Clamp,
-                    SKShaderTileMode.Clamp, currentInvertedTransform);
+                using var shaderImage = snapshot.ToShader(SKShaderTileMode.Clamp, SKShaderTileMode.Clamp, inverse);
 
-                // 4. 为我们的 SKSL 扭曲着色器准备 uniforms。
-                var pixelSize = new PixelSize((int)_bounds.Width, (int)_bounds.Height);
-                var uniforms = new SKRuntimeEffectUniforms(_effect);
+                var uniforms = new SKRuntimeEffectUniforms(_effect)
+                {
+                    ["radius"] = (float)_owner.Radius,
+                    ["resolution"] = new[] { (float)pixelWidth, (float)pixelHeight }
+                };
 
-                // 更新为传递 "radius" 而不是 "blurRadius"。
-                uniforms["radius"] = (float)_owner.Radius;
-                uniforms["resolution"] = new[] { (float)pixelSize.Width, (float)pixelSize.Height };
-
-                // 5. 通过将我们的背景着色器作为 'content' 输入提供给 SKSL 效果，来创建最终的着色器。
-                var children = new SKRuntimeEffectChildren(_effect) { { "content", backdropShader } };
+                var children = new SKRuntimeEffectChildren(_effect) { { "content", shaderImage } };
                 using var finalShader = _effect.ToShader(false, uniforms, children);
 
-                // 6. 创建一个带有最终着色器的画笔并进行绘制。
                 using var paint = new SKPaint { Shader = finalShader };
-                canvas.DrawRect(SKRect.Create(0, 0, (float)_bounds.Width, (float)_bounds.Height), paint);
-
-                if (children is IDisposable disposableChildren)
-                {
-                    disposableChildren.Dispose();
-                }
-
-                if (uniforms is IDisposable disposableUniforms)
-                {
-                    disposableUniforms.Dispose();
-                }
+                canvas.DrawRect(SKRect.Create(0, 0, pixelWidth, pixelHeight), paint);
             }
         }
     }

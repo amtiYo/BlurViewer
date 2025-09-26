@@ -1,10 +1,13 @@
 using System;
+using System.IO;
 using Avalonia;
 
 namespace FreshViewer;
 
 internal static class Program
 {
+    private static readonly string StartupLogPath = Path.Combine(AppContext.BaseDirectory, "startup.log");
+
     [STAThread]
     public static void Main(string[] args)
     {

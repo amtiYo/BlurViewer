@@ -14,7 +14,7 @@
         Height="900"
         MinWidth="900"
         MinHeight="640"
-        TransparencyLevelHint="Mica,AcrylicBlur,Blur,Transparent"
+        TransparencyLevelHint="Transparent"
         Background="Transparent"
         SystemDecorations="None"
         ExtendClientAreaToDecorationsHint="True"
@@ -94,7 +94,7 @@
   </Window.DataContext>
 
   <Grid>
-    <Border Background="{StaticResource LiquidGlass.WindowBackground}" Opacity="0.92" />
+    <Border Background="{StaticResource LiquidGlass.WindowBackground}" Opacity="1" />
     <Canvas>
       <Ellipse Width="820" Height="820" Fill="{StaticResource Aura.BloomPrimary}" Canvas.Left="-240" Canvas.Top="-260" />
       <Ellipse Width="660" Height="660" Fill="{StaticResource Aura.BloomSecondary}" Canvas.Right="-220"
@@ -152,11 +152,7 @@
                       Cursor="Hand"
                       Click="OnPreviousClicked"
                       ToolTip.Tip="← / A">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                  <Image Width="18" Height="18" Source="avares://FreshViewer/Assets/Icons/Chevron_Left_MD.svg"
-                         Stretch="Uniform" />
-                  <TextBlock Text="{DynamicResource Strings.Back}" />
-                </StackPanel>
+              <TextBlock Text="{DynamicResource Strings.Back}" />
               </Button>
               <Button Padding="14,10"
                       CornerRadius="18"
@@ -169,11 +165,7 @@
                       Cursor="Hand"
                       Click="OnNextClicked"
                       ToolTip.Tip="→ / D">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                  <TextBlock Text="{DynamicResource Strings.Forward}" />
-                  <Image Width="18" Height="18" Source="avares://FreshViewer/Assets/Icons/Chevron_Right_MD.svg"
-                         Stretch="Uniform" />
-                </StackPanel>
+              <TextBlock Text="{DynamicResource Strings.Forward}" />
               </Button>
               <!-- Fit button removed per request -->
               <Button Padding="14,10"
@@ -187,11 +179,7 @@
                       Cursor="Hand"
                       Click="OnRotateClicked"
                       ToolTip.Tip="R / L">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                  <Image Width="18" Height="18" Source="avares://FreshViewer/Assets/Icons/Arrow_Undo_Down_Left.svg"
-                         Stretch="Uniform" />
-                  <TextBlock Text="{DynamicResource Strings.Rotate}" />
-                </StackPanel>
+              <TextBlock Text="{DynamicResource Strings.Rotate}" />
               </Button>
             </StackPanel>
 
@@ -211,11 +199,7 @@
                       Cursor="Hand"
                       Click="OnOpenButtonClicked"
                       ToolTip.Tip="Ctrl+O · Открыть">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                  <Image Width="18" Height="18" Source="avares://FreshViewer/Assets/Icons/Folder_Open.svg"
-                         Stretch="Uniform" />
-                  <TextBlock Text="{DynamicResource Strings.Open}" />
-                </StackPanel>
+              <TextBlock Text="{DynamicResource Strings.Open}" />
               </Button>
               <Button Padding="14,10"
                       CornerRadius="18"
@@ -247,11 +231,7 @@
                       Cursor="Hand"
                       Click="OnToggleSettingsClicked"
                       ToolTip.Tip="P · Настройки">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                  <Image Width="18" Height="18" Source="avares://FreshViewer/Assets/Icons/Settings.svg"
-                         Stretch="Uniform" />
-                  <TextBlock Text="{DynamicResource Strings.Settings}" />
-                </StackPanel>
+                <TextBlock Text="{DynamicResource Strings.Settings}" />
               </Button>
               <!-- Fullscreen button removed per request -->
             </StackPanel>

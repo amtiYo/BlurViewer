@@ -1,9 +1,13 @@
 <h1 align="center">FreshViewer</h1>
 
 <p align="center">
-  <a href="https://github.com/amtiYo/FreshViewer"><img alt="License" src="https://img.shields.io/github/license/amtiYo/FreshViewer?label=license"></a>
-  <a href="https://github.com/amtiYo/FreshViewer/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/amtiYo/FreshViewer?display_name=tag&sort=semver"></a>
-  <img alt="Conventional Commits" src="https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg">
+
+![Release Download](https://img.shields.io/github/downloads/amtiYo/BlurViewer/total?style=flat-square)
+[![Release Version](https://img.shields.io/github/v/release/amtiYo/BlurViewer?style=flat-square)](https://github.com/amtiYo/BlurViewer/releases/latest)
+[![GitHub license](https://img.shields.io/github/license/amtiYo/BlurViewer?style=flat-square)](LICENSE)
+[![GitHub Star](https://img.shields.io/github/stars/amtiYo/BlurViewer?style=flat-square)](https://github.com/amtiYo/BlurViewer/stargazers)
+[![GitHub Fork](https://img.shields.io/github/forks/amtiYo/BlurViewer?style=flat-square)](https://github.com/amtiYo/BlurViewer/network/members)
+![GitHub Repo size](https://img.shields.io/github/repo-size/amtiYo/BlurViewer?style=flat-square&color=3cb371)
 </p>
 
 A modern, distraction‑free image viewer for Windows built with .NET 8 and Avalonia. FreshViewer features a crisp Liquid Glass interface, smooth navigation, rich format support, and a handy info overlay — all optimized for everyday use.
